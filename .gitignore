@@ -1,0 +1,11 @@
+# Flight data, tracks and footage stay out of the repository
+*.kml
+*.csv
+*.gpx
+*.360
+*.mp4
+*.MP4
+
+# Python
+__pycache__/
+*.pyc
