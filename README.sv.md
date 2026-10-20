@@ -1,58 +1,91 @@
 # trim-gpx
 
-Klipper ett GPX-, KML- eller CSV-spår till exakt ett videoklipp. Gjort för den
-dagen GoPro-kameran spelar in ett klipp **utan GPS-fix**: flygplanets spår från
-[Flightradar24](https://www.flightradar24.com) ersätter kamerans GPS, och
-resultatet går in i [OVRLEY](https://www.ovrley.cc) som vilken annan klipptelemetri
-som helst.
+Ser till att varje GoPro-klipp har GPS-telemetri för hela sin längd. Det
+kontrollerar GPX-filen som extraherats ur varje klipp mot klippet självt, och
+fyller det som saknas från ett annat spår — i första hand en
+[SkyDemon](https://www.skydemon.aero)-logg, i andra hand ett
+[Flightradar24](https://www.flightradar24.com)-spår — medan kamerans egna
+punkter ligger kvar där den har dem. Resultatet går in i
+[OVRLEY](https://www.ovrley.cc) som vilken annan klipptelemetri som helst.
+
+Det kan också klippa vilket spår som helst till exakt ett klipp.
 
 🇬🇧 [English version of this README](README.md) ·
-📖 [Manual: bygg upp ett klipps GPS från Flightradar24](MANUAL.sv.md) / [Manual in English](MANUAL.md)
+📖 [Manual: komplettera ett klipps GPS](MANUAL.sv.md) / [Manual in English](MANUAL.md)
 
 ```bash
-trim_gpx.py fl03_4229ad6f.kml fl03_4229ad6f_GS010132.gpx --video /mnt/e/DCIM/100GOPRO/GS010132.360 --lang sv
+cd /sökväg/till/flygningen      # klippens GPX-filer, plus SkyDemon/Flightradar24-spår
+trim_gpx.py --check . --video-dir /mnt/e/DCIM/100GOPRO --lang sv
 ```
 
 ```
-Källa:    1526 tidsstämplade punkter, 2026-10-17 11:36:47Z – 12:35:00Z
-Video:    GS010132.360: creation_time 2026-10-17T12:05:07Z, längd 62.208 s
-Fönster:  2026-10-17 12:05:07Z – 12:06:09Z (62.208 s)
-I fönstret: 29 källpunkter, största glapp mellan punkter 3 s
-Höjd:     213–274 m (700–900 ft)
-Markfart: 91–125 kt (uppmätt i källan, skrivs med)
-Kurs:     060° → 189°
+Kontrollerar 1 klipp, videor i /mnt/e/DCIM/100GOPRO:
+  GS010130.gpx  saknas     63.1 s av 203.093 s: 10:00:27Z – 10:01:30Z · kamerans klocka +0.03 s
 
-✅ Sparade 30 punkter → fl03_4229ad6f_GS010132.gpx
+GS010130.gpx: saknar 10:00:27Z – 10:01:30Z (63.1 s av 203.093 s)
+  Fyll från:
+    1  fl02_42294bf5.gpx  Flightradar24  täcker 63.1 s av 63.1 s
+  Välj 1–1 (Enter = 1), en annan fil, eller n för att lämna luckan:
+  ✓ 63.1 s från fl02_42294bf5.gpx (30 punkter); matchat mot kameran: höjd +182 ft, position 3 m
+  ✅ GS010130.gpx uppdaterad: 1401 kamerapunkter + 30 ifyllda (originalet: GS010130.gpx.orig)
+
+Alla klipp har data för hela sin längd (kontrollerade: 1).
 ```
 
 ## Vad det gör
 
+**Kontroll av ett klipps egen GPX** (`--check`)
+
+- **Hittar det som saknas.** Varje GPX jämförs med klippets `creation_time` och
+  längd (ur `.360`-filen, lästa med ffprobe): ett klipp helt utan fix, ett som
+  väntade på fix, eller ett med ett avbrott på mer än 2 sekunder.
+- **Ser igenom gopro-telemetrys platshållare.** gopro-telemetry börjar sin GPX
+  med en kopia av den första fixen, daterad till första bildrutan. Efter en lång
+  väntan på fix ligger den punkten långt från där kameran var, och OVRLEY står
+  still på den tills de riktiga data börjar. Den tas bort.
+- **Kontrollerar kamerans klocka.** Platshållaren bär GPS-tiden för första
+  bildrutan, så kamerans klocka kan jämföras med GPS-tiden för varje klipp som
+  har fix.
+- **Erbjuder det som kan fylla luckan.** Det letar bredvid klippen efter spår
+  som täcker tiden som saknas, erbjuder en SkyDemon-logg före ett
+  Flightradar24-spår, och frågar innan det används ett. `--fill` anger ett spår
+  själv, och `--yes` tar det bästa utan att fråga.
+- **Passar ihop fyllnaden med kameran.** Vid varje skarv flyttas den ifyllda
+  sträckan så att den möter kamerans position och GPS-höjd: Flightradar24:s
+  barometriska höjd låg 182 ft under kamerans GPS-höjd i exemplet ovan. Ett
+  klipp utan egen fix får höjdskillnaden från grannklippen.
+- **Uppdaterar klippets GPX på plats** och sparar originalet som `.gpx.orig`,
+  så att OVRLEY och gopro-max-gpx-pipeline hittar den under det vanliga namnet.
+  Ifyllda punkter anger sin källa i `<src>`.
+- **Tar en hel mapp på en gång**: en rad per klipp, frågor bara för de klipp
+  som har luckor. Klipp som fyllts i tidigare räknas som kompletta.
+
+**Klippning av ett spår till ett klipp**
+
 - **Läser Flightradar24:s exporter som de är**, KML eller CSV, och dessutom
-  vilken GPX 1.0/1.1 eller KML med tidsstämplar som helst. gpsbabels
-  konvertering av en Flightradar24-KML fungerar också.
-- **Klipper exakt.** Första och sista punkten interpoleras, så spåret börjar på
-  klippets första ögonblick och slutar på dess sista, på millisekunden.
-- **Tar fönstret från klippet.** `--video` läser klippets `creation_time` och
-  längd med ffprobe, även för kapitel 2, 3 … av en lång GoPro-inspelning.
-- **Behåller den uppmätta farten och kursen.** Flightradar24:s tidsstämplar är
-  hela sekunder medan punkterna kommer med två–tre sekunders mellanrum, så en
-  fart som räknas fram ur positionerna hoppar fram och tillbaka: 62–166 kt i
-  exemplet ovan, där flygplanet flög i 91–125 kt. trim-gpx skriver
-  Flightradar24:s uppmätta markfart och kurs i varje punkt, och OVRLEY använder
-  den farten i stället för att räkna fram en egen.
-- **Fångar en fel tidszon.** Om fönstret missar spåret säger det vilken `--tz`
+  vilken GPX 1.0/1.1 eller KML med tidsstämplar som helst, och gpsbabels
+  konvertering av en Flightradar24-KML.
+- **Klipper exakt**: första och sista punkten interpoleras till klippets första
+  och sista ögonblick, på millisekunden. `--video` tar fönstret från klippet,
+  även för kapitel 2, 3 … av en lång inspelning.
+- **Fångar en fel tidszon**: om fönstret missar spåret säger det vilken `--tz`
   som lägger fönstret inuti.
-- **Skriver ut en sammanfattning** (punkter, största glapp, höjd, fart, kurs)
-  att jämföra med videon.
-- Bara Pythons standardbibliotek.
+
+**Båda** behåller den uppmätta farten och kursen från Flightradar24 och
+SkyDemon. Flightradar24:s tidsstämplar är hela sekunder medan punkterna kommer
+med två–tre sekunders mellanrum, så en fart som räknas fram ur positionerna
+hoppar fram och tillbaka (62–166 kt där flygplanet flög i 91–125 kt). De
+uppmätta värdena skrivs i varje punkt som Garmin TrackPointExtension, och
+OVRLEY använder den farten i stället för att räkna fram en egen. Bara Pythons
+standardbibliotek.
 
 ## Krav
 
 - Python 3.9 eller senare
-- ffprobe, som ingår i ffmpeg, för `--video` (`sudo apt install ffmpeg` i WSL/Ubuntu)
-- Ett spår av flygningen. Från Flightradar24 kräver det ett konto som kan
-  exportera KML/CSV och ett flygplan som sänder ADS-B — se
-  [det här behöver du](MANUAL.sv.md#det-här-behöver-du) i manualen.
+- ffprobe, som ingår i ffmpeg (`sudo apt install ffmpeg` i WSL/Ubuntu)
+- För ifyllnad: en SkyDemon-logg av flygningen, eller en Flightradar24-export,
+  vilket kräver ett konto som kan exportera KML/CSV och ett flygplan som sänder
+  ADS-B — se [det här behöver du](MANUAL.sv.md#det-här-behöver-du) i manualen
 
 ## Installation
 
@@ -80,30 +113,65 @@ python $HOME\bin\trim_gpx.py --help
 ## Användning
 
 ```
-trim_gpx.py INDATA UTDATA --video KLIPP                  [--tz H] [--hz N] [--lang sv]
-trim_gpx.py INDATA UTDATA --start TID --duration LÄNGD   [--tz H] [--hz N] [--lang sv]
+trim_gpx.py --check [KAMERA.gpx | MAPP ...]  [--video-dir MAPP] [--fill SPÅR] [--yes] [--dry-run]
+trim_gpx.py SPÅR UTDATA --video KLIPP                  [--tz H] [--hz N]
+trim_gpx.py SPÅR UTDATA --start TID --duration LÄNGD   [--tz H] [--hz N]
 ```
+
+### Kontroll av kamerans GPX
 
 | flagga | |
 |---|---|
-| `INDATA` | spåret: Flightradar24-KML eller CSV, eller vilken GPX/KML med tider som helst |
+| `--check` | kontrollera varje kamera-GPX (`GS010130.gpx` …) mot sitt klipp och fyll det som saknas |
+| `KAMERA.gpx`, `MAPP` | GPX-filerna som ska kontrolleras, eller mappar med dem (standard: den här mappen) |
+| `--video-dir MAPP` | var klippens `.360`-filer ligger (standard: bredvid GPX-filen). En `.mp4` används om det inte finns någon `.360`, med en varning |
+| `--video KLIPP` | klippets fil, för en enda GPX |
+| `--fill SPÅR` | fyll från det här spåret först, utan att fråga (kan upprepas, i önskad ordning) |
+| `--search MAPP` | leta efter spår i den här mappen också (kan upprepas) |
+| `-y`, `--yes` | fyll från det bästa spåret som hittas, utan att fråga |
+| `--ask`, `--no-ask` | fråga innan ifyllnad, eller aldrig (standard: fråga när det körs i en terminal) |
+| `--dry-run` | bara rapportera, ändra ingenting |
+| `--refill` | gör om sträckor som fyllts i vid en tidigare körning; kamerans punkter behålls |
+| `-o GPX`, `--output GPX` | skriv hit i stället för att uppdatera kamerans GPX (ett klipp) |
+| `--max-gap S` | ett hål i kamerans GPS som är längre än så räknas som saknat (standard `2` s) |
+| `--tz H` | klippens `creation_time` är lokal tid, UTC+H. Ett klipp vars gopro-telemetry-GPX har fix tidsbestäms av GPS och behöver ingen `--tz` |
+
+Spår som erbjuds för ifyllnad, i den här ordningen: SkyDemon-loggar, andra
+GPS-spår, Flightradar24-exporter. Filer från kameran (`GS…`), filer som det här
+skriptet har skrivit, och samma flygning exporterad flera gånger utelämnas.
+
+Slutstatus: `0` alla klipp kompletta, `1` ett klipp kunde inte kontrolleras
+(t.ex. ingen video), `3` ett klipp saknar fortfarande data.
+
+### Klippning av ett spår
+
+| flagga | |
+|---|---|
+| `SPÅR` | spåret: Flightradar24-KML eller CSV, eller vilken GPX/KML med tider som helst |
 | `UTDATA` | GPX 1.1-filen som ska skrivas |
 | `--video KLIPP` | ta start och längd från klippet: dess `creation_time` och längd, lästa med ffprobe. Använd kamerans originalfil, t.ex. `GS010132.360` |
 | `--start TID` | klippets start: `12:05:07` (datumet tas från spåret), `2026-10-17T12:05:07Z`, ffprobes `2026-10-17T12:05:07.000000Z` eller exiftools `2026:10:17 12:05:07`. En tid utan tidszon är UTC. Går före `--video` |
 | `--duration LÄNGD` | klippets längd: `62.208` (sekunder) eller `1:02`. Går före `--video` |
 | `--tz H` | starttiden är kamerans lokala klocka, UTC+H: `2` för svensk sommartid, `1` för vintertid. Standard `0`, kameran går på UTC |
 | `--hz N` | sampla om till N punkter per sekund. OVRLEY behöver det inte |
-| `--ffprobe SÖKVÄG` | vilken ffprobe som ska användas (standard: `ffprobe` i PATH) |
-| `--lang en\|sv` | språk för utskrifterna (standard: `$GOPRO_LANG`, annars engelska) |
-| `--version` | skriv ut versionen |
 
 Slutstatus: `0` klart (även när spåret bara täcker en del av klippet, med en
 varning), `1` fel, `2` fönstret ligger helt utanför spåret.
+
+### Gemensamma flaggor
+
+| flagga | |
+|---|---|
+| `--ffprobe SÖKVÄG` | vilken ffprobe som ska användas (standard: `ffprobe` i PATH) |
+| `--lang en\|sv` | språk för utskrifterna (standard: `$GOPRO_LANG`, annars engelska) |
+| `--version` | skriv ut versionen |
 
 ### Indataformat
 
 | källa | vad som läses |
 |---|---|
+| kamerans GPX (gopro-telemetry, gpmf2gpx.py) | tidsstämplade `<trkpt>`; punkter med `<fix>none</fix>` eller fix 0 hoppas över |
+| SkyDemons GPX | `<trkpt>` med `<ele>`, `<speed>` (m/s) och `<time>` |
 | Flightradar24-KML | Trail-placemarks: tid, position och höjd; fart och kurs ur varje punkts beskrivning |
 | Flightradar24-CSV | `Timestamp,UTC,Callsign,Position,Altitude,Speed,Direction`, höjd i fot och fart i knop |
 | gpsbabels GPX av en Flightradar24-KML | de tidsstämplade `<wpt>`; fart och kurs ur beskrivningen som gpsbabel behåller i `<desc>` |
@@ -114,12 +182,14 @@ Punkter utan tid hoppas över; Flightradar24:s Route-linje har inga.
 
 ### Utdata
 
-Ett GPX 1.1-spår med ett segment. Varje punkt har `<ele>` och `<time>`, med
-millisekunder där det behövs. När källan hade dem bär varje punkt också den
-uppmätta farten i m/s och kursen i grader, som Garmin TrackPointExtension:
+Ett GPX 1.1-spår med ett segment, från klippets första ögonblick till dess
+sista. Varje punkt har `<ele>` och `<time>`, med millisekunder där det behövs.
+En punkt som fyllts i av `--check` anger sin källa i `<src>`, och när källan
+hade dem bär punkten den uppmätta farten i m/s och kursen i grader, som Garmin
+TrackPointExtension:
 
 ```xml
-<trkpt lat="56.1582910" lon="13.2884790"><ele>213.4</ele><time>2026-10-17T12:05:07Z</time><extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>47.33</gpxtpx:speed><gpxtpx:course>60.0</gpxtpx:course></gpxtpx:TrackPointExtension></extensions></trkpt>
+<trkpt lat="56.0352876" lon="13.2601768"><ele>329.9</ele><time>2026-10-17T10:00:27Z</time><src>fl02_42294bf5.gpx</src><extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>50.42</gpxtpx:speed><gpxtpx:course>356.0</gpxtpx:course></gpxtpx:TrackPointExtension></extensions></trkpt>
 ```
 
 ## Språk
@@ -136,18 +206,29 @@ cd ~/dev/trim-gpx
 python3 -m unittest discover -s tests -v
 ```
 
-Testerna kör en syntetisk flygning som är uppbyggd som en Flightradar24-export,
-med en attrapp i stället för ffprobe, så de behöver varken nätverk eller ffmpeg.
-De täcker det exakta fönstret, uppmätt fart och kurs, en kurs som interpoleras
-genom norr, omsampling, tidszoner och `--tz`-tipset, ett fönster som delvis
-ligger utanför spåret, GoPro-kapitel, felmeddelandena och båda språken. KML,
-CSV och gpsbabels GPX av samma flygning måste ge byte-identiska utdata.
+Testerna behöver varken nätverk eller ffmpeg: en syntetisk flygning, uppbyggd
+som en Flightradar24-export, "flygs" av en kamera som skriver GPX i
+gopro-telemetry-stil med 10 Hz och av en SkyDemon-liknande logger, och en
+attrapp ersätter ffprobe.
 
-Kontrollerat på riktiga data också. En flygning som exporterats från
-Flightradar24 både som KML och CSV (1 526 punkter) gav byte-identisk GPX från
-båda filerna i 60 slumpade fönster, och gpsbabels GPX av KML-filen gav samma fil
-igen. OVRLEY:s egen GPX-parser (`app/src/lib/activity/gpx-parser.js`, OVRLEY
-commit `13c3f41`), körd i Chromium, läste farten och kursen ur varje punkt.
+- `tests/test_check.py` täcker `--check`: ett komplett klipp som lämnas orört,
+  luckor i början, i mitten och i slutet, ett klipp utan fix som tar sin höjd
+  från grannarna, SkyDemon som erbjuds före Flightradar24, platshållaren, en
+  kameraklocka på lokal tid, svar som skrivs vid frågan, en hel mapp, en
+  omkörning och `--refill`, och en video som saknas.
+- `tests/test_trim_gpx.py` täcker klippning: det exakta fönstret, uppmätt fart
+  och kurs, en kurs genom norr, omsampling, tidszoner, GoPro-kapitel,
+  felmeddelanden och båda språken. KML, CSV och gpsbabels GPX av samma flygning
+  måste ge byte-identiska utdata.
+
+Kontrollerat på riktiga data också. På ett riktigt klipp där kameran väntade
+63 s på fix fyllde `--check` luckan från en Flightradar24-export med höjd och
+position ihoppassade i skarven (inget höjdsteg, inget ryck i farten). En
+flygning som exporterats från Flightradar24 både som KML och CSV gav
+byte-identisk GPX från båda filerna, och gpsbabels GPX av KML-filen gav samma
+fil igen. En SkyDemon-logg lästes med sin fart. OVRLEY:s egen GPX-parser
+(`app/src/lib/activity/gpx-parser.js`, OVRLEY commit `13c3f41`), körd i
+Chromium, läste den uppmätta farten och kursen ur varje ifylld punkt.
 
 ## Relaterat
 
