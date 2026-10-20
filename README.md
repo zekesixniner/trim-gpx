@@ -166,7 +166,8 @@ video), `3` a clip still has missing data.
 | `--hz N` | resample to N points per second. OVRLEY does not need it |
 
 Exit status: `0` done (also when the track covers only part of the clip, with
-a warning), `1` error, `2` the window lies entirely outside the track.
+a warning; the GPX then holds the track's first or last position out to the
+clip's ends), `1` error, `2` the window lies entirely outside the track.
 
 ### Common options
 
@@ -203,6 +204,16 @@ Garmin TrackPointExtension:
 <trkpt lat="56.0352876" lon="13.2601768"><ele>329.9</ele><time>2026-10-17T10:00:27Z</time><src>fl02_42294bf5.gpx</src><extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>50.42</gpxtpx:speed><gpxtpx:course>356.0</gpxtpx:course></gpxtpx:TrackPointExtension></extensions></trkpt>
 ```
 
+The GPX always spans the whole clip. Where no track reaches the clip's first or
+last moment, a point there holds the nearest position, with no speed or
+course, so that OVRLEY shows the GPX as long as the video and the sync offset
+stays 0. `--check` does not count it as data: the gap is still reported, and
+filled on a later run if a track for it turns up.
+
+```xml
+<trkpt lat="56.0833277" lon="13.1939228"><ele>72.9</ele><time>2026-10-17T11:36:08Z</time><src>hold</src></trkpt>
+```
+
 ## Language
 
 Messages are English or Swedish: `--lang sv`, or set `GOPRO_LANG=sv` once for
@@ -225,7 +236,10 @@ gpsbabel.
   the start, in the middle and at the end, a clip with no fix that takes its
   altitude from its neighbours, SkyDemon offered before Flightradar24, the
   placeholder, a camera clock on local time, answers typed at the prompt, a
-  whole folder, a re-run and `--refill`, and a missing video. Also saving the
+  whole folder, a re-run and `--refill`, and a missing video. A start that
+  stays missing is held so that the GPX spans the clip, is still reported on a
+  re-run, is added to a 1.2.0 GPX that lacks it, and gives way to a track that
+  covers it. Also saving the
   Flightradar24 exports as GPX: once, from the CSV, again when the export is
   newer, never over a GPX gpsbabel did not make, not with `--dry-run`, only a
   warning when gpsbabel is missing or fails. With gpsbabel installed, one test
@@ -235,7 +249,8 @@ gpsbabel.
   course, a course through north, resampling, time zones, GoPro chapters, error
   messages and both languages. The KML, CSV and gpsbabel GPX of the same flight
   must give byte-identical output, and the track is saved as GPX but never
-  over the OUTPUT.
+  over the OUTPUT. A track that covers only part of the clip is held out to its
+  ends.
 
 Also checked on real data. On a real clip whose camera waited 63 s for a fix,
 `--check` filled the gap from a Flightradar24 export with the altitude and

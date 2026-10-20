@@ -46,7 +46,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 # --------------------------------------------------------------------------- #
 # messages (EN/SV, --lang or GOPRO_LANG like gopro-max-gpx-pipeline)
@@ -134,6 +134,10 @@ MESSAGES = {
         "updated": "  ✅ {name} updated: {cam} camera points + {fill} filled "
                    "(original: {orig})",
         "updated_to": "  ✅ Saved {n} points ({cam} camera + {fill} filled) → {out}",
+        "held": "  The GPX still spans the whole clip: over {spans} it holds the nearest "
+                "position (no data).",
+        "partial_hold": "          The GPX still spans the whole clip: outside that it holds the "
+                        "track's nearest position (no data).",
         "dry_run": "  (--dry-run: nothing is filled or written)",
         "sum_ok": "\nEvery clip has data for its whole length ({n} checked).",
         "sum_left": "\n{k} of {n} clip(s) still have missing data.",
@@ -231,6 +235,10 @@ MESSAGES = {
         "updated": "  ✅ {name} uppdaterad: {cam} kamerapunkter + {fill} ifyllda "
                    "(originalet: {orig})",
         "updated_to": "  ✅ Sparade {n} punkter ({cam} kamera + {fill} ifyllda) → {out}",
+        "held": "  GPX-filen täcker ändå hela klippet: under {spans} står den kvar på närmaste "
+                "position (inga data).",
+        "partial_hold": "          GPX-filen täcker ändå hela klippet: utanför det står den kvar på "
+                        "spårets närmaste position (inga data).",
         "dry_run": "  (--dry-run: inget fylls i eller skrivs)",
         "sum_ok": "\nAlla klipp har data för hela sin längd (kontrollerade: {n}).",
         "sum_left": "\n{k} av {n} klipp saknar fortfarande data.",
@@ -284,6 +292,9 @@ def die(key, code=1, **kw):
 Pt = namedtuple("Pt", "t lat lon ele spd crs src", defaults=(None, None, None))
 # kind: camera, skydemon, fr24, trim (written by this script) or other
 Track = namedtuple("Track", "path pts times kind creator")
+# <src> of a point that is not data: it holds the nearest position at the clip's
+# first or last moment, where nothing reaches, so that the GPX spans the clip
+HOLD = "hold"
 
 KT = 0.514444  # m/s per knot
 FT = 0.3048    # m per foot
@@ -617,6 +628,24 @@ def cut(pts, times, s, e, hz=0.0):
     return ([interp(pts, times, s)]
             + [p for p in pts if s < p.t < e]
             + [interp(pts, times, e)])
+
+
+def hold_ends(pts, start, end, tol=0.0):
+    """pts with a point added at start and at end where the data stops more than
+    tol seconds short of them. It holds the nearest position, with no speed or
+    course (nothing was measured), so the GPX spans the whole clip and OVRLEY's
+    sync offset stays 0. Returns the points and the held intervals."""
+    if not pts:
+        return pts, []
+    out, held = list(pts), []
+    a, b = out[0], out[-1]
+    if secs(start, a.t) > tol:
+        out.insert(0, Pt(start, a.lat, a.lon, a.ele, None, None, HOLD))
+        held.append((start, a.t))
+    if secs(b.t, end) > tol:
+        out.append(Pt(end, b.lat, b.lon, b.ele, None, None, HOLD))
+        held.append((b.t, end))
+    return out, held
 
 
 def dist_m(a, b):
@@ -1061,7 +1090,7 @@ def check_clip(clip, args):
     clip.s, clip.dur = start, v_dur
     clip.e = start + timedelta(seconds=v_dur)
     have = track.pts if not args.refill else clip.camera
-    have = [p for p in have if p is not placeholder]
+    have = [p for p in have if p is not placeholder and p.src != HOLD]
     clip.have = sorted(have, key=lambda p: p.t)
     span_list = mixed_spans(clip.have, gap)
     clip.missing = uncovered(span_list, clip.s, clip.e, gap)
@@ -1257,24 +1286,42 @@ def fill_clip(clip, args, sources, ref, interactive):
         missing = apply_source(clip, src, ref, fills, missing)
     if not fills:
         print(t("left_as_is"))
+        # an earlier run's GPX that stops short of the clip's ends (1.2.0 did not
+        # hold them) is written again as it is, but spanning the clip
+        disk = clip.track.pts
+        kept = [p for p in disk if p.src != HOLD]
+        if (clip.track.kind == "trim" and kept
+                and (secs(clip.s, disk[0].t) > clip.gap or secs(disk[-1].t, clip.e) > clip.gap)):
+            write_clip(clip, args, [], kept)
         return missing
+    write_clip(clip, args, fills, clip.have)
+    return missing
+
+
+def write_clip(clip, args, fills, base):
+    """The clip's GPX: base (the camera's points and earlier fills, which win over
+    new fills) and fills, cut to the clip and held at its ends where nothing
+    reaches them."""
     merged = {p.t: p for p in fills}
-    merged.update({p.t: p for p in clip.have})        # the camera's points (and earlier fills) win
+    merged.update({p.t: p for p in base})
     pts = sorted(merged.values(), key=lambda p: p.t)
     times = [p.t for p in pts]
     s, e = max(clip.s, times[0]), min(clip.e, times[-1])
-    out = cut(pts, times, s, e)
+    # a start or end that is still missing is held, so the GPX spans the clip
+    out, held = hold_ends(cut(pts, times, s, e), clip.s, clip.e, clip.gap)
     n_cam = sum(1 for p in out if p.src is None)
+    n_fill = sum(1 for p in out if p.src not in (None, HOLD))
     if args.output:
         write_gpx(args.output, out, Path(args.output).stem)
-        print(t("updated_to", n=len(out), cam=n_cam, fill=len(out) - n_cam, out=args.output))
+        print(t("updated_to", n=len(out), cam=n_cam, fill=n_fill, out=args.output))
     else:
         orig = clip.path.with_name(clip.path.name + ".orig")
         if clip.track.kind != "trim":
             shutil.copy2(clip.path, orig)
         write_gpx(clip.path, out, clip.path.stem)
-        print(t("updated", name=clip.name, cam=n_cam, fill=len(out) - n_cam, orig=orig.name))
-    return missing
+        print(t("updated", name=clip.name, cam=n_cam, fill=n_fill, orig=orig.name))
+    if held:
+        print(t("held", spans=fmt_spans(held)))
 
 
 def check_main(args, ap):
@@ -1450,10 +1497,12 @@ def trim_main(args, ap):
     s, e = max(start, first), min(end, last)
     if (s, e) != (start, end):
         print(t("partial", a=f"{s:%H:%M:%S}", b=f"{e:%H:%M:%S}"))
+        print(t("partial_hold"))
         for line in tz_hints():
             print(line)
 
-    out = cut(pts, times, s, e, args.hz)
+    core = cut(pts, times, s, e, args.hz)
+    out, _ = hold_ends(core, start, end)              # the GPX spans the whole clip
 
     # summary, to check against the video
     n_src = sum(1 for x in times if s <= x <= e)
@@ -1461,20 +1510,20 @@ def trim_main(args, ap):
     i1 = min(bisect.bisect_left(times, e), len(pts) - 1)
     gap = max(((times[i + 1] - times[i]).total_seconds() for i in range(i0, i1)), default=0)
     print(t("in_window", n=n_src, gap=f"{gap:g}"))
-    eles = [p.ele for p in out if p.ele is not None]
+    eles = [p.ele for p in core if p.ele is not None]
     if eles:
         print(t("altitude", lo=min(eles), hi=max(eles),
                 lo_ft=min(eles) / FT, hi_ft=max(eles) / FT))
-    spds = [p.spd / KT for p in out if p.spd is not None]
+    spds = [p.spd / KT for p in core if p.spd is not None]
     if spds:
         print(t("speed_measured", lo=min(spds), hi=max(spds)))
     else:
         kts = [dist_m(a, b) / (b.t - a.t).total_seconds() / KT
-               for a, b in zip(out, out[1:]) if b.t > a.t]
+               for a, b in zip(core, core[1:]) if b.t > a.t]
         if kts:
             print(t("speed_derived", lo=min(kts), hi=max(kts)))
-    if out[0].crs is not None and out[-1].crs is not None:
-        print(t("course", a=out[0].crs, b=out[-1].crs))
+    if core[0].crs is not None and core[-1].crs is not None:
+        print(t("course", a=core[0].crs, b=core[-1].crs))
 
     write_gpx(track_out, out, Path(track_out).stem)
     print(t("saved", n=len(out), out=track_out))

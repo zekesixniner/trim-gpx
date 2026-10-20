@@ -189,6 +189,18 @@ What happens to the file:
   `-o` writes elsewhere instead.
 - **Measured speed and course** from the source go into each filled point, and
   OVRLEY shows them instead of computing speed from positions.
+- **The GPX always spans the whole clip.** If no track covers the clip's start
+  (or end), a point at the first (or last) frame holds the nearest position,
+  marked `<src>hold</src>`, with no speed or course. OVRLEY then shows the GPX
+  as long as the video, and the sync offset stays 0. It is not counted as data:
+  the gap is still reported, and filled on a later run if a track for it turns
+  up.
+
+  ```
+    still missing: 11:36:08Z – 11:36:47Z (39.0 s)
+    ✅ GS010131.gpx updated: 3179 camera points + 10 filled (original: GS010131.gpx.orig)
+    The GPX still spans the whole clip: over 11:36:08Z – 11:36:47Z it holds the nearest position (no data).
+  ```
 
 ## 5. Check the result
 
@@ -215,9 +227,9 @@ keeps the camera's points. To go back to the camera's original:
 1. Import the stitched clip, GoPro Player's MP4 (e.g. `GS010130.mp4`), and its
    GPX as the activity, as for any other clip.
 2. **Sync.** OVRLEY's automatic sync compares the video's creation time with
-   the GPX. The completed GPX starts on the clip's first frame, so the sync
-   offset lands on 0 s. If OVRLEY says *Video could not be synced with
-   activity*, set the sync offset to 0 by hand.
+   the GPX. The completed GPX starts on the clip's first frame (held there if
+   nothing covered the start), so the sync offset lands on 0 s. If OVRLEY says
+   *Video could not be synced with activity*, set the sync offset to 0 by hand.
 3. Fine-tune if a turn in the picture and on the map do not line up: the sync
    offset can be nudged a second at a time.
 4. Render as for the other clips: `GS010130_ovr.mp4`.
@@ -335,7 +347,8 @@ began only at about 75 kt, around lift-off; in one of them the roll had begun
 |---|---|---|
 | `missing` with nothing offered | no track next to the clips covers the gap | put the SkyDemon log or Flightradar24 export in the folder, or name it with `--fill` |
 | `… has no data for the missing time.` | the track chosen is from another flight or time | choose another, or check the date and the clip's `--video-dir` |
-| `still missing: …` | the tracks only cover part of the gap (ground, low level, edge of coverage) | add another track, or `n` to leave it |
+| `still missing: …` | the tracks only cover part of the gap (ground, low level, edge of coverage) | add another track, or `n` to leave it; the GPX still spans the clip |
+| OVRLEY shows the GPX shorter than the video | a GPX from 1.2.0 whose start or end could not be filled | run `--check` again with 1.2.1 or later: it adds the held point |
 | `altitude not matched` | a clip with no fix and no neighbouring camera GPX in the folder | put the neighbouring clips' GPX in the folder and run with `--refill` |
 | `error  no video GS010130.360 or .mp4` | the `.360` was not found | give `--video-dir` |
 | `[WARNING] … timed by GS010130.mp4, not the camera's .360` | only an `.mp4` was found | give `--video-dir` with the `.360` files |

@@ -292,12 +292,18 @@ class TrimGpxTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.points("h.gpx")[0][0], "2026-10-17T11:01:40Z")
 
-    def test_partly_outside_warns_and_stops_at_the_track_end(self):
+    def test_partly_outside_warns_and_holds_the_track_end(self):
+        end = self.last + timedelta(seconds=20)
         r = self.run_tool("flight.kml", "i.gpx", "--start", iso(self.last - timedelta(seconds=10)),
                           "--duration", "30")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("[WARNING] The track only covers", r.stdout)
-        self.assertEqual(self.points("i.gpx")[-1][0], iso(self.last))
+        self.assertIn("The GPX still spans the whole clip", r.stdout)
+        pts = self.points("i.gpx")                    # the GPX ends with the clip, not the track
+        self.assertEqual((pts[-2][0], pts[-1][0]), (iso(self.last), iso(end)))
+        self.assertEqual(pts[-1][1:3], pts[-2][1:3])  # the track's last position, held
+        self.assertEqual(pts[-1][3:], (None, None))   # no speed or course: nothing was measured
+        self.assertEqual((self.dir / "i.gpx").read_text().count("<src>hold</src>"), 1)
 
     # -- --video with a stub ffprobe ----------------------------------------------
     @unittest.skipIf(os.name == "nt", "the stub ffprobe needs a POSIX shebang")

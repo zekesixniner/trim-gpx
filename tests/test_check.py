@@ -255,6 +255,49 @@ class CheckTest(unittest.TestCase):
         self.assertSmoothSeam(pts)
 
     @unittest.skipIf(os.name == "nt", "the stub ffprobe needs a POSIX shebang")
+    def test_a_start_still_missing_is_held_so_the_gpx_spans_the_clip(self):
+        d = self.folder("GS010002.gpx")                             # no fix 200-230 s
+        late = [r for r in synthetic_flight() if r[0] >= at(215)]   # a track that starts late
+        write_fr24_csv(d / "late.csv", late)
+        t1 = late[0][0]
+        span = f"11:03:20Z – {t1:%H:%M:%S}Z"
+        r = self.run_check(d, "GS010002.gpx", "--yes", "--fill", "late.csv")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn(f"still missing: {span} ({T.secs(at(200), t1):.1f} s)", r.stdout)
+        self.assertIn(f"The GPX still spans the whole clip: over {span} it holds "
+                      "the nearest position (no data).", r.stdout)
+        pts = self.pts(d / "GS010002.gpx")
+        self.assertEqual((pts[0].t, pts[-1].t), (at(200), at(260)))   # the whole clip
+        hold, first = pts[0], pts[1]
+        self.assertEqual((hold.src, first.t, first.src), ("hold", t1, "late.csv"))
+        self.assertEqual((hold.lat, hold.lon, hold.ele), (first.lat, first.lon, first.ele))
+        self.assertEqual((hold.spd, hold.crs), (None, None))
+        self.assertEqual(sum(1 for p in pts if p.src == "hold"), 1)
+        n_fill = sum(1 for p in pts if p.src == "late.csv")       # the held point is not counted
+        self.assertIn(f"camera points + {n_fill} filled (original", r.stdout)
+
+        # the held point is not data: the gap is still reported, and the file left alone
+        before = (d / "GS010002.gpx").read_bytes()
+        r = self.run_check(d, "GS010002.gpx", "--yes")
+        self.assertIn(f"missing   {T.secs(at(200), t1):.1f} s of 60 s: {span}", r.stdout)
+        self.assertEqual((d / "GS010002.gpx").read_bytes(), before)
+
+        # a GPX from 1.2.0, which stopped short of the clip's start, gets its point
+        (d / "GS010002.gpx").write_text("\n".join(
+            line for line in before.decode().splitlines() if "<src>hold</src>" not in line))
+        r = self.run_check(d, "GS010002.gpx", "--yes")
+        self.assertIn(f"over {span} it holds the nearest position", r.stdout)
+        self.assertEqual((d / "GS010002.gpx").read_bytes(), before)
+
+        # a track that covers the start replaces the held point
+        shutil.copy(self.lib / "fl01_aaaa0001.kml", d / "fl01_aaaa0001.kml")
+        r = self.run_check(d, "GS010002.gpx", "--yes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        pts = self.pts(d / "GS010002.gpx")
+        self.assertEqual((pts[0].t, pts[0].src, pts[-1].t), (at(200), "fl01_aaaa0001.kml", at(260)))
+        self.assertFalse(any(p.src == "hold" for p in pts))
+
+    @unittest.skipIf(os.name == "nt", "the stub ffprobe needs a POSIX shebang")
     def test_whole_folder_at_once_and_a_rerun_finds_it_complete(self):
         names = [f"{n}.gpx" for n in CLIPS]
         d = self.folder(*names, "fl01_aaaa0001.kml")

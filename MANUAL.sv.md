@@ -190,6 +190,18 @@ Det här händer med filen:
   `-o` skriver någon annanstans i stället.
 - **Uppmätt fart och kurs** från källan läggs i varje ifylld punkt, och OVRLEY
   visar dem i stället för att räkna fram farten ur positionerna.
+- **GPX-filen täcker alltid hela klippet.** Täcker inget spår klippets början
+  (eller slut), står en punkt på första (eller sista) bildrutan kvar på
+  närmaste position, märkt `<src>hold</src>`, utan fart och kurs. Då visar
+  OVRLEY GPX-filen lika lång som videon, och synkoffseten blir 0. Den räknas
+  inte som data: luckan rapporteras fortfarande, och fylls vid en senare
+  körning om ett spår för den dyker upp.
+
+  ```
+    saknas fortfarande: 11:36:08Z – 11:36:47Z (39.0 s)
+    ✅ GS010131.gpx uppdaterad: 3179 kamerapunkter + 10 ifyllda (originalet: GS010131.gpx.orig)
+    GPX-filen täcker ändå hela klippet: under 11:36:08Z – 11:36:47Z står den kvar på närmaste position (inga data).
+  ```
 
 ## 5. Kontrollera resultatet
 
@@ -216,8 +228,9 @@ original: `mv GS010130.gpx.orig GS010130.gpx`.
 1. Importera det stitchade klippet, GoPro Players MP4 (t.ex. `GS010130.mp4`),
    och dess GPX som aktivitet, som för vilket klipp som helst.
 2. **Synk.** OVRLEY:s automatiska synk jämför videons skapandetid med
-   GPX-filen. Den kompletterade GPX-filen börjar på klippets första bildruta,
-   så synkoffseten landar på 0 s. Säger OVRLEY *Video could not be synced with
+   GPX-filen. Den kompletterade GPX-filen börjar på klippets första bildruta
+   (där den står kvar om inget täckte början), så synkoffseten landar på 0 s.
+   Säger OVRLEY *Video could not be synced with
    activity* sätter du synkoffseten till 0 för hand.
 3. Finjustera om en sväng i bilden och på kartan inte stämmer överens.
    Synkoffseten kan nudgas en sekund i taget.
@@ -339,7 +352,8 @@ Det som inget spår täcker förblir saknat, och `--check` säger det.
 |---|---|---|
 | `saknas` men ingenting erbjuds | inget spår bredvid klippen täcker luckan | lägg SkyDemon-loggen eller Flightradar24-exporten i mappen, eller ange den med `--fill` |
 | `… har inga data för den tid som saknas.` | det valda spåret är från en annan flygning eller tid | välj ett annat, eller kontrollera datumet och klippets `--video-dir` |
-| `saknas fortfarande: …` | spåren täcker bara en del av luckan (mark, låg höjd, utkanten av täckningen) | lägg till ett spår till, eller `n` för att lämna det |
+| `saknas fortfarande: …` | spåren täcker bara en del av luckan (mark, låg höjd, utkanten av täckningen) | lägg till ett spår till, eller `n` för att lämna det; GPX-filen täcker ändå klippet |
+| OVRLEY visar GPX-filen kortare än videon | en GPX från 1.2.0 vars början eller slut inte gick att fylla | kör `--check` igen med 1.2.1 eller senare: den lägger till punkten som står kvar |
 | `höjden inte matchad` | ett klipp utan fix och utan grannklippens kamera-GPX i mappen | lägg grannklippens GPX i mappen och kör med `--refill` |
 | `fel  ingen video GS010130.360 eller .mp4` | `.360`-filen hittades inte | ange `--video-dir` |
 | `[VARNING] … tiden tas från GS010130.mp4, inte kamerans .360` | bara en `.mp4` hittades | ange `--video-dir` med `.360`-filerna |

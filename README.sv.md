@@ -167,7 +167,8 @@ Slutstatus: `0` alla klipp kompletta, `1` ett klipp kunde inte kontrolleras
 | `--hz N` | sampla om till N punkter per sekund. OVRLEY behöver det inte |
 
 Slutstatus: `0` klart (även när spåret bara täcker en del av klippet, med en
-varning), `1` fel, `2` fönstret ligger helt utanför spåret.
+varning; GPX-filen står då kvar på spårets första eller sista position ut till
+klippets ändar), `1` fel, `2` fönstret ligger helt utanför spåret.
 
 ### Gemensamma flaggor
 
@@ -204,6 +205,16 @@ TrackPointExtension:
 <trkpt lat="56.0352876" lon="13.2601768"><ele>329.9</ele><time>2026-10-17T10:00:27Z</time><src>fl02_42294bf5.gpx</src><extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>50.42</gpxtpx:speed><gpxtpx:course>356.0</gpxtpx:course></gpxtpx:TrackPointExtension></extensions></trkpt>
 ```
 
+GPX-filen täcker alltid hela klippet. Där inget spår når klippets första eller
+sista ögonblick står en punkt där kvar på närmaste position, utan fart och
+kurs, så att OVRLEY visar GPX-filen lika lång som videon och synkoffseten blir
+0. `--check` räknar den inte som data: luckan rapporteras fortfarande, och
+fylls vid en senare körning om ett spår för den dyker upp.
+
+```xml
+<trkpt lat="56.0833277" lon="13.1939228"><ele>72.9</ele><time>2026-10-17T11:36:08Z</time><src>hold</src></trkpt>
+```
+
 ## Språk
 
 Utskrifterna är på engelska eller svenska: `--lang sv`, eller sätt
@@ -227,7 +238,10 @@ attrapper ersätter ffprobe och gpsbabel.
   luckor i början, i mitten och i slutet, ett klipp utan fix som tar sin höjd
   från grannarna, SkyDemon som erbjuds före Flightradar24, platshållaren, en
   kameraklocka på lokal tid, svar som skrivs vid frågan, en hel mapp, en
-  omkörning och `--refill`, och en video som saknas. Dessutom att
+  omkörning och `--refill`, och en video som saknas. En början som fortsätter
+  att saknas står kvar så att GPX-filen täcker klippet, rapporteras ändå vid
+  en omkörning, läggs till i en GPX från 1.2.0 som saknar den, och lämnar plats
+  för ett spår som täcker den. Dessutom att
   Flightradar24-exporterna sparas som GPX: en gång, från CSV-filen, igen när
   exporten är nyare, aldrig över en GPX som gpsbabel inte gjort, inte med
   `--dry-run`, och bara en varning när gpsbabel saknas eller misslyckas. Finns
@@ -237,7 +251,8 @@ attrapper ersätter ffprobe och gpsbabel.
   och kurs, en kurs genom norr, omsampling, tidszoner, GoPro-kapitel,
   felmeddelanden och båda språken. KML, CSV och gpsbabels GPX av samma flygning
   måste ge byte-identiska utdata, och spåret sparas som GPX men aldrig över
-  UTDATA.
+  UTDATA. Ett spår som bara täcker en del av klippet står kvar ut till dess
+  ändar.
 
 Kontrollerat på riktiga data också. På ett riktigt klipp där kameran väntade
 63 s på fix fyllde `--check` luckan från en Flightradar24-export med höjd och
