@@ -11,6 +11,7 @@ Flightradar24-style barometric altitude, and by a SkyDemon-style logger. Each
 test copies the files it needs into its own folder, since --check updates
 camera GPX files in place.
 """
+import argparse
 import json
 import math
 import os
@@ -25,8 +26,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import trim_gpx as T                                                     # noqa: E402
-from test_trim_gpx import (STUB_FFPROBE, T0, synthetic_flight,           # noqa: E402
-                           write_fr24_kml, write_fr24_csv)
+from test_trim_gpx import (STUB_FFPROBE, STUB_GPSBABEL, T0,              # noqa: E402
+                           synthetic_flight, write_fr24_kml, write_fr24_csv)
 
 SCRIPT = Path(__file__).resolve().parent.parent / "trim_gpx.py"
 CAM_FT = 190          # camera GPS altitude above Flightradar24's barometric one
@@ -101,9 +102,9 @@ class CheckTest(unittest.TestCase):
             write_camera(cls.lib / f"{name}.gpx", cls.fr, start, dur, **kw)
             db[f"{name}.360"] = [T.fmt_time(at(start)).replace("Z", ".000000Z"), float(dur)]
         (cls.lib / "db.json").write_text(json.dumps(db))
-        stub = cls.lib / "ffprobe_stub"
-        stub.write_text(STUB_FFPROBE)
-        stub.chmod(0o755)
+        for name, text in (("ffprobe_stub", STUB_FFPROBE), ("gpsbabel_stub", STUB_GPSBABEL)):
+            (cls.lib / name).write_text(text)
+            (cls.lib / name).chmod(0o755)
 
     @classmethod
     def tearDownClass(cls):
@@ -119,14 +120,23 @@ class CheckTest(unittest.TestCase):
             shutil.copy(self.lib / n, d / n)
         return d
 
-    def run_check(self, d, *args, answers=None, lang="en"):
-        env = dict(os.environ, GOPRO_LANG=lang, STUB_FFPROBE_DB=str(self.lib / "db.json"))
-        cmd = [sys.executable, str(SCRIPT), "--check", *map(str, args),
+    def run_check(self, d, *args, answers=None, lang="en", env=None):
+        """--check in folder d, with the stubs (the stub gpsbabel notes its calls
+        in d/gpsbabel.log) unless the test gives --gpsbabel."""
+        e = dict(os.environ, GOPRO_LANG=lang, STUB_FFPROBE_DB=str(self.lib / "db.json"),
+                 STUB_GPSBABEL_LOG=str(d / "gpsbabel.log"))
+        e.update(env or {})
+        cmd = [sys.executable, str(SCRIPT), "--check",
+               "--gpsbabel", str(self.lib / "gpsbabel_stub"), *map(str, args),
                "--video-dir", str(d / "card"), "--ffprobe", str(self.lib / "ffprobe_stub")]
         if answers is not None:
             cmd.append("--ask")
-        return subprocess.run(cmd, capture_output=True, text=True, cwd=d, env=env,
+        return subprocess.run(cmd, capture_output=True, text=True, cwd=d, env=e,
                               input=answers if answers is not None else "")
+
+    def babel_calls(self, d):
+        log = d / "gpsbabel.log"
+        return log.read_text().splitlines() if log.exists() else []
 
     def pts(self, path):
         return T.load_track(path).pts
@@ -333,6 +343,103 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(T.fmt_time(pts[0].t), "2026-10-17T11:03:50Z")
         complete = T.load_track(self.lib / "GS010001.gpx").pts
         self.assertIsNone(T.drop_placeholder(complete, 2.0)[1])
+
+    # -- Flightradar24's KML/CSV also saved as GPX (gpsbabel) ---------------------
+    @unittest.skipIf(os.name == "nt", "the stubs need a POSIX shebang")
+    def test_flightradar24_files_are_saved_as_gpx_once_and_from_the_csv(self):
+        d = self.folder("GS010002.gpx", "aaaa0001.csv")
+        shutil.copy(self.lib / "fl01_aaaa0001.kml", d / "aaaa0001.kml")   # same flight, both files
+        r = self.run_check(d, ".", "--yes", "--fill", "aaaa0001.kml")     # the KML is read first
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("from aaaa0001.kml", r.stdout)
+        self.assertIn("Saved as GPX: aaaa0001.csv → aaaa0001.gpx (2 points, gpsbabel)", r.stdout)
+        calls = self.babel_calls(d)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("-i xcsv,style=", calls[0])
+        self.assertIn(f"-f {d.resolve() / 'aaaa0001.csv'} ", calls[0])
+
+        r = self.run_check(d, ".", "--yes")       # nothing left to fill, and up to date
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("Saved as GPX", r.stdout)
+        later = (d / "aaaa0001.gpx").stat().st_mtime + 60
+        os.utime(d / "aaaa0001.csv", (later, later))
+        r = self.run_check(d, ".", "--yes")       # a newer export is saved again
+        self.assertIn("Saved as GPX: aaaa0001.csv → aaaa0001.gpx", r.stdout)
+        self.assertEqual(len(self.babel_calls(d)), 2)
+
+    @unittest.skipIf(os.name == "nt", "the stubs need a POSIX shebang")
+    def test_a_gpx_gpsbabel_did_not_make_is_never_written_over(self):
+        d = self.folder("GS010001.gpx", "aaaa0001.csv")
+        mine = d / "aaaa0001.gpx"
+        T.write_gpx(mine, self.fr.pts[:5], "mine")
+        old = (d / "aaaa0001.csv").stat().st_mtime - 600
+        os.utime(mine, (old, old))
+        before = mine.read_bytes()
+        r = self.run_check(d, ".", "--yes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[WARNING] aaaa0001.gpx was not made by gpsbabel, so aaaa0001.csv "
+                      "is not saved as GPX over it.", r.stdout)
+        self.assertEqual(mine.read_bytes(), before)
+        self.assertEqual(self.babel_calls(d), [])
+
+    @unittest.skipIf(os.name == "nt", "the stubs need a POSIX shebang")
+    def test_dry_run_saves_no_gpx_and_gpsbabel_trouble_is_only_a_warning(self):
+        d = self.folder("GS010001.gpx", "fl01_aaaa0001.kml")
+        r = self.run_check(d, ".", "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.babel_calls(d), [])
+        self.assertFalse((d / "fl01_aaaa0001.gpx").exists())
+
+        r = self.run_check(d, ".", "--yes", "--gpsbabel", d / "no-such-gpsbabel")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("gpsbabel not found", r.stdout)
+        self.assertIn("so fl01_aaaa0001.kml is not saved as GPX", r.stdout)
+
+        r = self.run_check(d, ".", "--yes", env={"STUB_GPSBABEL_FAIL": "kml: no such file"},
+                           lang="sv")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[VARNING] gpsbabel kunde inte spara fl01_aaaa0001.kml som GPX: "
+                      "kml: no such file", r.stdout)
+        self.assertEqual(sorted(f.name for f in d.iterdir() if "fl01" in f.name),
+                         ["fl01_aaaa0001.kml"])      # no GPX, no half-written .part
+
+    def test_the_folder_offers_the_original_rather_than_gpsbabels_copy(self):
+        d = Path(tempfile.mkdtemp(dir=self.tmp.name))
+        shutil.copy(self.lib / "aaaa0001.csv", d / "aaaa0001.csv")
+        # what gpsbabel makes of the CSV: GPX 1.0 with <speed>/<course>, no Flightradar24 text
+        body = "".join(f'<trkpt lat="{p.lat:.9f}" lon="{p.lon:.9f}"><ele>{p.ele:.3f}</ele>'
+                       f'<time>{T.fmt_time(p.t)}</time><course>{p.crs:.6f}</course>'
+                       f'<speed>{p.spd:.6f}</speed><name>SETST</name></trkpt>'
+                       for p in T.load_track(d / "aaaa0001.csv").pts)
+        (d / "aaaa0001.gpx").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.0" creator="GPSBabel - '
+            'https://www.gpsbabel.org" xmlns="http://www.topografix.com/GPX/1/0">'
+            f'<trk><trkseg>{body}</trkseg></trk></gpx>\n')
+        args = argparse.Namespace(search=[], fill=[])
+        self.assertEqual([s.name for s in T.Sources(args, [d]).discovered()], ["aaaa0001.csv"])
+
+    @unittest.skipUnless(shutil.which("gpsbabel"), "gpsbabel is not installed")
+    def test_real_gpsbabel_keeps_every_point_of_the_kml_and_of_the_csv(self):
+        d = Path(tempfile.mkdtemp(dir=self.tmp.name))
+        rows = synthetic_flight()
+        write_fr24_kml(d / "fr.kml", rows)
+        write_fr24_csv(d / "fr2.csv", rows)
+        lines = T.save_fr24_gpx([T.load_track(d / "fr.kml"), T.load_track(d / "fr2.csv")],
+                                "gpsbabel")
+        self.assertEqual(lines, ["Saved as GPX: fr.kml → fr.gpx (400 points, gpsbabel)",
+                                 "Saved as GPX: fr2.csv → fr2.gpx (400 points, gpsbabel)"])
+        for name in ("fr.gpx", "fr2.gpx"):
+            text = (d / name).read_text()
+            self.assertNotIn("<wpt", text)                  # one timed track, nothing else
+            self.assertEqual(text.count("<trk>"), 1)
+            got = T.load_track(d / name).pts
+            self.assertEqual(len(got), len(rows))
+            for p, (tm, lat, lon, alt, kt, hdg) in zip(got, rows):
+                self.assertEqual((p.t, round(p.lat, 6), round(p.lon, 6)), (tm, lat, lon))
+                self.assertAlmostEqual(p.ele / T.FT, alt, delta=0.1)
+                self.assertAlmostEqual(p.spd / T.KT, kt, delta=0.01)
+                self.assertAlmostEqual(p.crs, hdg, delta=0.01)
+        self.assertIn("<speed>", (d / "fr2.gpx").read_text())   # the CSV's speed as GPX 1.0
 
 
 if __name__ == "__main__":

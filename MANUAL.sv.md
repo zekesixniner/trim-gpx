@@ -29,9 +29,11 @@ en SkyDemon-logg av flygningen om du har en, annars från Flightradar24.
 ## Det här behöver du
 
 **Verktyg:** `trim_gpx.py` ([installation](README.sv.md#installation)),
-ffprobe (`sudo apt install ffmpeg` i WSL), gopro-telemetry-tool för kamerans
-GPX, och OVRLEY. Klippens `.360`-filer måste finnas till hands, på kortet eller
-som kopia: deras `creation_time` och längd talar om vad varje GPX ska täcka.
+ffprobe (`sudo apt install ffmpeg` i WSL), gpsbabel (`sudo apt install
+gpsbabel`, för en GPX-kopia av Flightradar24-exporten), gopro-telemetry-tool
+för kamerans GPX, och OVRLEY. Klippens `.360`-filer måste finnas till hands, på
+kortet eller som kopia: deras `creation_time` och längd talar om vad varje GPX
+ska täcka.
 
 **Ett spår av flygningen att fylla från**, i den här ordningen:
 
@@ -98,6 +100,23 @@ flygning och behåll Flightradar24:s flyg-ID, t.ex. `fl02_42294bf5.kml`: dagens
 andra flygning, Flightradar24-flygning `42294bf5`. KML och CSV ger samma
 resultat, och en gpsbabel-konvertering av KML-filen fungerar också. Ligger
 flera av dem i mappen erbjuds de en gång.
+
+`trim_gpx.py` sparar också exporten som GPX bredvid, `fl02_42294bf5.gpx`, för
+program som vill ha GPX. gpsbabel gör den, från CSV-filen om du laddat ner
+båda (då följer farten och kursen med). Skriptet gör det varje gång det läser
+exporten: vid varje `--check` av mappen, oavsett om något saknas, och vid
+klippning. Det gör om den bara när exporten är nyare, och aldrig över en GPX
+som gpsbabel inte gjort. Så länge KML/CSV-filen ligger bredvid erbjuds den
+GPX-filen inte för ifyllnad. För hand tar KML-filen:
+
+```bash
+gpsbabel -i kml -f fl02_42294bf5.kml -x nuketypes,tracks,routes -x transform,trk=wpt,del -o gpx -F fl02_42294bf5.gpx
+```
+
+Ett enkelt `gpsbabel -i kml -f … -o gpx -F …` ger de tidsstämplade punkterna
+som waypoints och rutten som ett spår utan tider; de två filtren gör ett
+tidsstämplat spår av punkterna. CSV-filen behöver en xcsv-stil för sitt
+citerade `"lat,lon"`: den finns som `FR24_CSV_STYLE` i `trim_gpx.py`.
 
 **Från SkyDemon:** exportera flygningens logg som GPX, t.ex. `SD_ESTT-ESTL.gpx`.
 SkyDemon skriver sitt namn i filen, och det är så den känns igen.
@@ -206,7 +225,9 @@ original: `mv GS010130.gpx.orig GS010130.gpx`.
 
 OVRLEY:s GPX-import läser den uppmätta farten ur varje ifylld punkt och
 använder den i stället för att räkna fram farten ur positionerna (kontrollerat
-mot OVRLEY:s källkod, commit `13c3f41`). Dess NVIDIA-väg skriver 8-bitarsvideo,
+mot OVRLEY:s källkod, commit `13c3f41`). Därför får OVRLEY klippets egen GPX och
+inte GPX-kopian av Flightradar24-exporten: gpsbabel skriver farten som
+`<speed>`, och den läser inte OVRLEY. Dess NVIDIA-väg skriver 8-bitarsvideo,
 även från GoPro Players 10-bitsexport, så `_ovr`-klippen passar ihop med
 varandra. Lägg inte en 10-bitsexport i samma körning av `xfade_concat.py` som
 `_ovr`-klipp, för då kraschar den vid första övergången med `Invalid output
@@ -296,13 +317,21 @@ en aning.
 **Flightradar24:s höjd** är transponderns barometriska höjd, räknad mot
 1013 hPa och inte korrigerad för dagens QNH
 ([Flightradar24](https://www.flightradar24.com/blog/inside-flightradar24/understanding-altitude-on-flightradar24/)),
-och många transpondrar i småflygplan rapporterar den i steg om 100 ft. På
-marken rapporterar Flightradar24 0. `--check` flyttar den till kamerans
-GPS-höjd vid skarvarna; ett klippt spår behåller den som den är.
+och många transpondrar i småflygplan rapporterar den i steg om 100 ft.
+`--check` flyttar den till kamerans GPS-höjd vid skarvarna; ett klippt spår
+behåller den som den är. Nära marken betyder Flightradar24:s 0 "lågt", inte "på
+marken". I båda exempelflygningarna gick höjden direkt mellan 200 och 0 ft och
+visade aldrig 100. Vid en landning låg kamerans GPS fortfarande ungefär 200 ft
+över banan när Flightradar24 gick till 0, 20 s före sättningen. En ifylld
+sträcka med 0-ft-punkter får därför en och samma höjd, 0 plus skarvens skillnad
+(t.ex. 238 ft). Det stämmer ungefär strax efter start och före landning, och är
+för högt på banan.
 
 **På marken och på låg höjd** tar Flightradar24:s täckning ofta slut, så taxning
-och början av startrullningen kan saknas. Det som inget spår täcker förblir
-saknat, och `--check` säger det.
+och startrullning kan saknas: på marken måste en mottagare finnas inom ett par
+mil, utan något i vägen. I båda exempelflygningarna började spåret först vid
+ungefär 75 kt, runt lättningen; i den ena hade rullningen börjat 33 s tidigare.
+Det som inget spår täcker förblir saknat, och `--check` säger det.
 
 ## Felsökning
 
@@ -316,6 +345,8 @@ saknat, och `--check` säger det.
 | `[VARNING] … tiden tas från GS010130.mp4, inte kamerans .360` | bara en `.mp4` hittades | ange `--video-dir` med `.360`-filerna |
 | `[VARNING] … kamerans klocka går … fel mot GPS-tiden` | kamerans klocka gick fel (eller på lokal tid) | inget för GPX-filen; sätt OVRLEY:s synkoffset till 0 |
 | `hittar inte ffprobe` | ffmpeg är inte installerat | `sudo apt install ffmpeg` |
+| `[VARNING] Hittar inte gpsbabel …` | gpsbabel är inte installerat; bara GPX-kopian av Flightradar24-exporten saknas | `sudo apt install gpsbabel` |
+| `[VARNING] … är inte gjord av gpsbabel, så … sparas inte som GPX över den.` | en egen GPX har exportens namn | döp om en av dem |
 | klippning: `[FEL] Fönstret ligger helt utanför spåret.` med ett förslag på `--tz` | kamerans klocka går i en annan tidszon än du angav | använd den föreslagna `--tz` |
 | klippning: `Kunde inte läsa …: rad N: …` | en skadad eller annorlunda CSV | kontrollera den raden; rubriken måste ha en kolumn för tid och en för position |
 | OVRLEY: *Video could not be synced with activity* | MP4-filens skapandetid saknas eller är en annan | sätt synkoffseten till 0 |

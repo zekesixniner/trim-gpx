@@ -22,6 +22,9 @@ come along when the source has them and are written to every point as a
 Garmin TrackPointExtension (speed in m/s, course in degrees). OVRLEY then uses
 that speed instead of deriving it from positions with whole-second timestamps.
 
+A Flightradar24 KML or CSV it reads is also saved as GPX beside it
+(4229ad6f.csv -> 4229ad6f.gpx) by gpsbabel, for other programs.
+
 See README.md and MANUAL.md; run with --help for the options.
 Svenska utskrifter: --lang sv, eller GOPRO_LANG=sv.
 """
@@ -36,13 +39,14 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # --------------------------------------------------------------------------- #
 # messages (EN/SV, --lang or GOPRO_LANG like gopro-max-gpx-pipeline)
@@ -137,6 +141,13 @@ MESSAGES = {
         "kind_skydemon": "SkyDemon",
         "kind_fr24": "Flightradar24",
         "kind_other": "GPS track",
+        # Flightradar24 KML/CSV saved as GPX
+        "gpx_saved": "Saved as GPX: {src} → {out} ({n} points, gpsbabel)",
+        "gpx_kept": "[WARNING] {out} was not made by gpsbabel, so {src} is not saved as GPX "
+                    "over it.",
+        "gpx_no_gpsbabel": "[WARNING] gpsbabel not found ({gpsbabel}), so {src} is not saved as "
+                           "GPX. Install it: sudo apt install gpsbabel",
+        "gpx_failed": "[WARNING] gpsbabel could not save {src} as GPX: {err}",
     },
     "sv": {
         "source": "Källa:    {n} tidsstämplade punkter, {first}Z – {last}Z",
@@ -227,6 +238,13 @@ MESSAGES = {
         "kind_skydemon": "SkyDemon",
         "kind_fr24": "Flightradar24",
         "kind_other": "GPS-spår",
+        # Flightradar24:s KML/CSV sparad som GPX
+        "gpx_saved": "Sparad som GPX: {src} → {out} ({n} punkter, gpsbabel)",
+        "gpx_kept": "[VARNING] {out} är inte gjord av gpsbabel, så {src} sparas inte som GPX "
+                    "över den.",
+        "gpx_no_gpsbabel": "[VARNING] Hittar inte gpsbabel ({gpsbabel}), så {src} sparas inte "
+                           "som GPX. Installera det: sudo apt install gpsbabel",
+        "gpx_failed": "[VARNING] gpsbabel kunde inte spara {src} som GPX: {err}",
     },
 }
 LANG = "en"
@@ -637,6 +655,108 @@ def write_gpx(path, pts, name):
 
 
 # --------------------------------------------------------------------------- #
+# Flightradar24 KML/CSV saved as GPX beside them, by gpsbabel
+# --------------------------------------------------------------------------- #
+# gpsbabel's xcsv style for Flightradar24's CSV. The quoted "lat,lon" is split
+# at its comma, and the human-readable lat/lon parser skips the quote marks.
+FR24_CSV_STYLE = """\
+DESCRIPTION Flightradar24 CSV
+EXTENSION csv
+FIELD_DELIMITER COMMA
+RECORD_DELIMITER NEWLINE
+PROLOGUE Timestamp,UTC,Callsign,Position,Altitude,Speed,Direction
+IFIELD TIMET_TIME,"","%ld"
+IFIELD IGNORE,"","%s"
+IFIELD SHORTNAME,"","%s"
+IFIELD LAT_HUMAN_READABLE,"","%s"
+IFIELD LON_HUMAN_READABLE,"","%s"
+IFIELD ALT_FEET,"","%f"
+IFIELD PATH_SPEED_KNOTS,"","%f"
+IFIELD PATH_COURSE,"","%f"
+"""
+
+
+def gpsbabel_cmd(gpsbabel, src, out, style):
+    """The gpsbabel command making one timed GPX track of a Flightradar24 KML or
+    CSV. Their timed points are read as waypoints and become the track; a KML's
+    untimed route lines are dropped first. GPX 1.0 keeps the CSV's speed and course."""
+    if src.suffix.lower() == ".csv":
+        read = ["-i", f"xcsv,style={style}", "-f", str(src)]
+    else:
+        read = ["-i", "kml", "-f", str(src), "-x", "nuketypes,tracks,routes"]
+    return [gpsbabel, *read, "-x", "transform,trk=wpt,del", "-o", "gpx", "-F", str(out)]
+
+
+def made_by_gpsbabel(path):
+    try:
+        with open(path, "rb") as f:
+            return b'creator="GPSBabel' in f.read(1024)
+    except OSError:
+        return False
+
+
+def save_fr24_gpx(tracks, gpsbabel, keep=()):
+    """Save each Flightradar24 KML/CSV among tracks as <name>.gpx beside it, from
+    the CSV when both are there. A GPX gpsbabel did not make, or a path in keep,
+    is never written over; one newer than its source is left alone. Returns the
+    lines to print: the GPX is a convenience, so trouble is only a warning."""
+    jobs = {}
+    for tr in tracks:
+        if tr.kind != "fr24" or tr.path.suffix.lower() not in (".kml", ".csv") or len(tr.pts) < 2:
+            continue
+        out = tr.path.resolve().with_suffix(".gpx")    # one GPX however the file was named
+        if out not in jobs or tr.path.suffix.lower() == ".csv":
+            jobs[out] = tr.path
+    keep = {Path(k).resolve() for k in keep if k}
+    todo = []
+    for out, src in sorted(jobs.items()):
+        if out.resolve() in keep:
+            continue
+        if out.exists():
+            if not made_by_gpsbabel(out):
+                todo.append((out, src, "kept"))
+                continue
+            if out.stat().st_mtime >= src.stat().st_mtime:
+                continue
+        todo.append((out, src, None))
+    lines = [t("gpx_kept", out=out.name, src=src.name) for out, src, why in todo if why]
+    todo = [(out, src) for out, src, why in todo if not why]
+    if not todo:
+        return lines
+    with tempfile.TemporaryDirectory() as tmp:
+        style = Path(tmp) / "fr24.style"
+        style.write_text(FR24_CSV_STYLE, encoding="utf-8")
+        for i, (out, src) in enumerate(todo):
+            part = out.with_name(f".{out.name}.part")
+            try:
+                r = subprocess.run(gpsbabel_cmd(gpsbabel, src, part, style),
+                                   capture_output=True, text=True)
+            except OSError:
+                names = ", ".join(s.name for _, s in todo[i:])
+                return lines + [t("gpx_no_gpsbabel", gpsbabel=gpsbabel, src=names)]
+            n = 0
+            if r.returncode == 0 and part.is_file():
+                try:
+                    n = len(load_track(part).pts)
+                except (TrimError, OSError, ET.ParseError, ValueError, TypeError, IndexError):
+                    n = 0
+            if n < 2:
+                err = (r.stderr or r.stdout or "").strip().splitlines()
+                part.unlink(missing_ok=True)
+                lines.append(t("gpx_failed", src=src.name,
+                               err=err[0] if err else f"exit {r.returncode}, {n} points"))
+                continue
+            try:
+                os.replace(part, out)
+            except OSError as e:
+                part.unlink(missing_ok=True)
+                lines.append(t("gpx_failed", src=src.name, err=e))
+                continue
+            lines.append(t("gpx_saved", src=src.name, out=out.name, n=n))
+    return lines
+
+
+# --------------------------------------------------------------------------- #
 # --check: coverage
 # --------------------------------------------------------------------------- #
 MAX_GAP = 2.0       # s: a hole in the camera's own GPS longer than this is missing data
@@ -1002,6 +1122,11 @@ class Sources:
                     src = self.load(f)
                     if isinstance(src, Exception) or src.kind not in KIND_RANK or len(src.pts) < 2:
                         continue
+                    # gpsbabel's copy of a Flightradar24 KML/CSV beside it: offer the original
+                    if (f.suffix.lower() == ".gpx" and src.track.creator.startswith("GPSBabel")
+                            and any(f.with_suffix(x).is_file()
+                                    for x in (".kml", ".csv", ".KML", ".CSV"))):
+                        continue
                     # the same flight as KML, CSV and gpsbabel GPX: offer it once
                     key = (src.kind, src.times[0], src.times[-1], len(src.pts))
                     if key in seen:
@@ -1010,6 +1135,19 @@ class Sources:
                     found.append(src)
             self.found = found
         return self.found
+
+    def flightradar24(self):
+        """Every Flightradar24 track this run has seen: beside the clips, in
+        --search, given with --fill or typed at a prompt."""
+        for d in self.folders + [Path(x) for x in self.args.search]:
+            for f in sorted(Path(d).iterdir()) if Path(d).is_dir() else []:
+                if (f.suffix.lower() in (".kml", ".csv") and f.is_file()
+                        and not CLIP_PREFIX_RE.match(f.name)):
+                    self.load(f)
+        for f in self.args.fill:
+            self.load(user_path(f))
+        return [s.track for s in self.cache.values()
+                if not isinstance(s, Exception) and s.kind == "fr24"]
 
     def ranked(self, missing, used):
         out = []
@@ -1177,11 +1315,11 @@ def check_main(args, ap):
             print(t("mp4_video", name=clip.name, video=video.name))
 
     todo = [c for c in clips if not c.error and c.missing]
+    folders = sorted({c.path.parent.resolve() for c in clips}, key=str)
+    sources = Sources(args, folders)
     if todo and args.dry_run:
         print(t("dry_run"))
     elif todo:
-        folders = sorted({c.path.parent.resolve() for c in clips}, key=str)
-        sources = Sources(args, folders)
         # camera GPS from every clip next to these, for matching the altitude
         ref = []
         for d in folders:
@@ -1196,6 +1334,12 @@ def check_main(args, ap):
         interactive = args.ask if args.ask is not None else sys.stdin.isatty()
         for clip in todo:
             clip.missing = fill_clip(clip, args, sources, ref, interactive and not args.yes)
+
+    # Flightradar24's KML/CSV also as GPX, whether or not anything was filled
+    if not args.dry_run:
+        lines = save_fr24_gpx(sources.flightradar24(), args.gpsbabel, keep=[args.output])
+        if lines:
+            print("\n" + "\n".join(lines))
 
     left = sum(1 for c in clips if not c.error and c.missing)
     errors = sum(1 for c in clips if c.error)
@@ -1218,16 +1362,20 @@ def trim_main(args, ap):
         ap.error(t("err_hz"))
 
     try:
-        pts = read_points(track_in)
+        track = load_track(track_in)
     except TrimError as e:
         die("err_read", path=track_in, err=e.text())
     except (OSError, ET.ParseError, ValueError, TypeError, IndexError) as e:
         die("err_read", path=track_in, err=e)
+    pts = track.pts
     if len(pts) < 2:
         die("err_points", path=track_in)
     times = [p.t for p in pts]
     first, last = times[0], times[-1]
     print(t("source", n=len(pts), first=f"{first:%Y-%m-%d %H:%M:%S}", last=f"{last:%H:%M:%S}"))
+    # a Flightradar24 KML/CSV is also saved as GPX beside it (never over OUTPUT)
+    for line in save_fr24_gpx([track], args.gpsbabel, keep=[track_out]):
+        print(line)
 
     v_start = v_dur = None
     if args.video:
@@ -1373,8 +1521,9 @@ def main():
                     help="the start time is the camera's local clock, with this UTC offset in "
                          "hours (2 = CEST, 1 = CET). Default 0: the camera runs on UTC. If the "
                          "window misses the track, the offset that fits is suggested")
-    ap.add_argument("--hz", type=float, default=0.0,
-                    help="resample to N points per second (default: keep the source points)")
+    ap.add_argument("--hz", type=float, default=0.0, metavar="N",
+                    help="resample to N points per second (default: keep the source points; "
+                         "OVRLEY interpolates between them itself and does not need this)")
     chk = ap.add_argument_group("checking camera GPX (--check)")
     chk.add_argument("--check", action="store_true",
                      help="check each camera GPX against its clip and fill what is missing")
@@ -1397,6 +1546,9 @@ def main():
                      help=f"a hole in the camera's GPS longer than this is missing data "
                           f"(default: {MAX_GAP:g} s)")
     ap.add_argument("--ffprobe", default="ffprobe", help="ffprobe to use (default: ffprobe)")
+    ap.add_argument("--gpsbabel", default="gpsbabel",
+                    help="gpsbabel to use when saving Flightradar24 KML/CSV as GPX beside them "
+                         "(default: gpsbabel)")
     ap.add_argument("--lang", choices=["en", "sv"], default=default_lang(),
                     help="message language (default: $GOPRO_LANG or en)")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

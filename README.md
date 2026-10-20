@@ -79,10 +79,20 @@ where the aircraft flew 91–125 kt). The measured values are written into every
 point as a Garmin TrackPointExtension, and OVRLEY uses that speed instead of
 computing its own. Python standard library only.
 
+**Both** also save every Flightradar24 KML or CSV they read as GPX beside it,
+under the same name (`4229ad6f.csv` → `4229ad6f.gpx`), for programs that want
+GPX. gpsbabel does it, from the CSV when both are there, because then the speed
+and course come along as GPX 1.0 `<speed>` and `<course>`. A GPX already there
+is replaced only if gpsbabel made it and the export is newer, and `--dry-run`
+writes none. That GPX is not for OVRLEY, which takes speed only from
+extensions: give OVRLEY the filled camera GPX or a cut track.
+
 ## Requirements
 
 - Python 3.9 or newer
 - ffprobe, part of ffmpeg (`sudo apt install ffmpeg` in WSL/Ubuntu)
+- gpsbabel, for saving Flightradar24's exports as GPX (`sudo apt install
+  gpsbabel`); without it you get a warning and everything else works
 - For filling: a SkyDemon log of the flight, or a Flightradar24 export, which
   takes an account that can export KML/CSV and an aircraft that sends ADS-B —
   see [what you need](MANUAL.md#what-you-need) in the manual
@@ -137,7 +147,8 @@ trim_gpx.py TRACK OUTPUT --start TIME --duration LEN [--tz H] [--hz N]
 
 Tracks offered for filling, in this order: SkyDemon logs, other GPS tracks,
 Flightradar24 exports. Files from the camera (`GS…`), files written by this
-script, and the same flight exported several times over are left out.
+script, gpsbabel's GPX of a Flightradar24 export lying beside it, and the same
+flight exported several times over are left out.
 
 Exit status: `0` every clip complete, `1` a clip could not be checked (e.g. no
 video), `3` a clip still has missing data.
@@ -162,6 +173,7 @@ a warning), `1` error, `2` the window lies entirely outside the track.
 | option | |
 |---|---|
 | `--ffprobe PATH` | the ffprobe to use (default: `ffprobe` on PATH) |
+| `--gpsbabel PATH` | the gpsbabel that saves Flightradar24's KML/CSV as GPX (default: `gpsbabel` on PATH) |
 | `--lang en\|sv` | message language (default: `$GOPRO_LANG`, else English) |
 | `--version` | print the version |
 
@@ -206,17 +218,24 @@ python3 -m unittest discover -s tests -v
 
 The tests need neither network nor ffmpeg: a synthetic flight, shaped like a
 Flightradar24 export, is "flown" by a camera that writes gopro-telemetry-style
-GPX at 10 Hz and by a SkyDemon-style logger, and a stub stands in for ffprobe.
+GPX at 10 Hz and by a SkyDemon-style logger, and stubs stand in for ffprobe and
+gpsbabel.
 
 - `tests/test_check.py` covers `--check`: a complete clip left alone, gaps at
   the start, in the middle and at the end, a clip with no fix that takes its
   altitude from its neighbours, SkyDemon offered before Flightradar24, the
   placeholder, a camera clock on local time, answers typed at the prompt, a
-  whole folder, a re-run and `--refill`, and a missing video.
+  whole folder, a re-run and `--refill`, and a missing video. Also saving the
+  Flightradar24 exports as GPX: once, from the CSV, again when the export is
+  newer, never over a GPX gpsbabel did not make, not with `--dry-run`, only a
+  warning when gpsbabel is missing or fails. With gpsbabel installed, one test
+  runs the real one on a KML and a CSV and checks that every point keeps its
+  time, position, altitude, speed and course.
 - `tests/test_trim_gpx.py` covers cutting: the exact window, measured speed and
   course, a course through north, resampling, time zones, GoPro chapters, error
   messages and both languages. The KML, CSV and gpsbabel GPX of the same flight
-  must give byte-identical output.
+  must give byte-identical output, and the track is saved as GPX but never
+  over the OUTPUT.
 
 Also checked on real data. On a real clip whose camera waited 63 s for a fix,
 `--check` filled the gap from a Flightradar24 export with the altitude and

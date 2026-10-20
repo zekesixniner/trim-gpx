@@ -7,9 +7,9 @@ Run from the repository root:
 
 The flight is synthetic but shaped like a Flightradar24 export: whole-second
 timestamps every 2-3 s, integer knots and degrees, altitude in 100 ft steps,
-and a right turn through north. ffprobe is replaced by a stub, so the --video
-tests need no video files (they are skipped on Windows, where the stub cannot
-be run directly).
+and a right turn through north. ffprobe and gpsbabel are replaced by stubs, so
+the --video tests need no video files (they are skipped on Windows, where the
+stubs cannot be run directly).
 """
 import json
 import math
@@ -132,6 +132,28 @@ if ct:
 print(json.dumps({"format": fmt}))
 """
 
+STUB_GPSBABEL = """#!/usr/bin/env python3
+# Stands in for gpsbabel: notes its arguments, then writes a small GPX where -F
+# says (or half of one and fails, when STUB_GPSBABEL_FAIL is set).
+import os, sys
+log = os.environ.get("STUB_GPSBABEL_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write(" ".join(sys.argv[1:]) + "\\n")
+out = sys.argv[sys.argv.index("-F") + 1]
+if os.environ.get("STUB_GPSBABEL_FAIL"):
+    with open(out, "w") as f:
+        f.write('<?xml version="1.0"?><gpx creator="GPSBabel')
+    print(os.environ["STUB_GPSBABEL_FAIL"], file=sys.stderr)
+    sys.exit(1)
+with open(out, "w") as f:
+    f.write('<?xml version="1.0" encoding="UTF-8"?>\\n<gpx version="1.0" '
+            'creator="GPSBabel - https://www.gpsbabel.org" xmlns="http://www.topografix.com/GPX/1/0">'
+            '<trk><trkseg><trkpt lat="1" lon="1"><time>2000-01-01T00:00:00Z</time></trkpt>'
+            '<trkpt lat="1" lon="1.001"><time>2000-01-01T00:00:02Z</time></trkpt>'
+            '</trkseg></trk></gpx>\\n')
+"""
+
 
 def iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -148,14 +170,20 @@ class TrimGpxTest(unittest.TestCase):
         write_babel_gpx(cls.dir / "babel.gpx", cls.rows)
         write_babel_gpx(cls.dir / "plain.gpx", cls.rows, with_desc=False)
         cls.last = cls.rows[-1][0]
+        stub = cls.dir / "gpsbabel_stub"
+        stub.write_text(STUB_GPSBABEL)
+        stub.chmod(0o755)
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
     def run_tool(self, *args, lang="en", env=None):
-        e = dict(os.environ, GOPRO_LANG=lang, **(env or {}))
-        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
+        """The script, with the stub gpsbabel unless the test gives --gpsbabel."""
+        e = dict(os.environ, GOPRO_LANG=lang, STUB_GPSBABEL_LOG=str(self.dir / "gpsbabel.log"))
+        e.update(env or {})
+        cmd = [sys.executable, str(SCRIPT), "--gpsbabel", str(self.dir / "gpsbabel_stub")]
+        return subprocess.run(cmd + list(map(str, args)),
                               capture_output=True, text=True, cwd=self.dir, env=e)
 
     def points(self, name):
@@ -363,6 +391,31 @@ class TrimGpxTest(unittest.TestCase):
         r = self.run_tool("flight.kml", "k.gpx", "--duration", "5")
         self.assertEqual(r.returncode, 2)
         self.assertIn("give --video, or both --start and --duration", r.stderr)
+
+    # -- a Flightradar24 file is also saved as GPX (gpsbabel) ----------------------
+    @unittest.skipIf(os.name == "nt", "the stub gpsbabel needs a POSIX shebang")
+    def test_cutting_saves_the_track_as_gpx_but_never_over_its_output(self):
+        d = Path(tempfile.mkdtemp(dir=self.dir))
+        write_fr24_csv(d / "fr.csv", self.rows)
+        log = {"STUB_GPSBABEL_LOG": str(d / "log")}
+        when = ["--start", iso(T0 + timedelta(seconds=60)), "--duration", "9"]
+
+        r = self.run_tool(d / "fr.csv", d / "fr.gpx", *when, env=log)    # OUTPUT is that GPX
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((d / "log").exists())
+        self.assertIn('creator="trim_gpx.py"', (d / "fr.gpx").read_text())
+
+        (d / "fr.gpx").unlink()
+        r = self.run_tool(d / "fr.csv", d / "cut.gpx", *when, env=log)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Saved as GPX: fr.csv → fr.gpx (2 points, gpsbabel)", r.stdout)
+        call = (d / "log").read_text()
+        self.assertIn("-i xcsv,style=", call)
+        self.assertIn("-x transform,trk=wpt,del -o gpx -F", call)
+
+        r = self.run_tool(d / "fr.csv", d / "cut.gpx", *when, env=log)     # up to date
+        self.assertNotIn("Saved as GPX", r.stdout)
+        self.assertEqual(len((d / "log").read_text().splitlines()), 1)
 
 
 if __name__ == "__main__":

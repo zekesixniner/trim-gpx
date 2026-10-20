@@ -30,9 +30,10 @@ a SkyDemon log of the flight if you have one, otherwise from Flightradar24.
 ## What you need
 
 **Tools:** `trim_gpx.py` ([installation](README.md#installation)), ffprobe
-(`sudo apt install ffmpeg` in WSL), gopro-telemetry-tool for the camera's GPX,
-and OVRLEY. The clips' `.360` files must be at hand, on the card or a copy:
-their `creation_time` and length say what each GPX should cover.
+(`sudo apt install ffmpeg` in WSL), gpsbabel (`sudo apt install gpsbabel`,
+for a GPX copy of Flightradar24's export), gopro-telemetry-tool for the
+camera's GPX, and OVRLEY. The clips' `.360` files must be at hand, on the card
+or a copy: their `creation_time` and length say what each GPX should cover.
 
 **A track of the flight to fill from**, in this order of preference:
 
@@ -99,6 +100,23 @@ and keep Flightradar24's flight ID, e.g. `fl02_42294bf5.kml`: flight 2 of the
 day, Flightradar24 flight `42294bf5`. KML and CSV give the same result, and a
 gpsbabel conversion of the KML works too. Several of them in the folder are
 offered once.
+
+`trim_gpx.py` also saves the export as GPX beside it, `fl02_42294bf5.gpx`, for
+programs that want GPX. gpsbabel makes it, from the CSV if you downloaded both
+(then the speed and course come along). The script does it whenever it reads
+the export: on every `--check` of the folder, whether or not anything is
+missing, and when cutting. It does it again only when the export is newer, and
+never over a GPX that gpsbabel did not make. While the KML/CSV lies beside it,
+that GPX is not offered for filling. By hand, the KML takes:
+
+```bash
+gpsbabel -i kml -f fl02_42294bf5.kml -x nuketypes,tracks,routes -x transform,trk=wpt,del -o gpx -F fl02_42294bf5.gpx
+```
+
+A plain `gpsbabel -i kml -f … -o gpx -F …` gives the timed points as waypoints
+and the route as a track without times; the two filters make one timed track
+of the points. The CSV needs an xcsv style for its quoted `"lat,lon"`: it is
+`FR24_CSV_STYLE` in `trim_gpx.py`.
 
 **From SkyDemon:** export the flight's log as GPX, e.g. `SD_ESTT-ESTL.gpx`.
 SkyDemon names itself in the file, and that is how it is recognised.
@@ -206,7 +224,9 @@ keeps the camera's points. To go back to the camera's original:
 
 OVRLEY's GPX import reads the measured speed from each filled point and uses it
 instead of computing speed from the positions (checked against OVRLEY's source,
-commit `13c3f41`). Its NVIDIA path writes 8-bit video, also from GoPro Player's
+commit `13c3f41`). That is why OVRLEY gets the clip's own GPX and not the GPX
+copy of the Flightradar24 export: gpsbabel writes speed as `<speed>`, which
+OVRLEY does not read. Its NVIDIA path writes 8-bit video, also from GoPro Player's
 10-bit export, so the `_ovr` clips match each other. Do not put a 10-bit export
 itself into the same `xfade_concat.py` run as `_ovr` clips: it fails at the
 first transition with `Invalid output format nv12 for hwframe download`.
@@ -293,13 +313,21 @@ a little.
 **Flightradar24's altitude** is the transponder's barometric altitude,
 referenced to 1013 hPa and not corrected for the day's QNH
 ([Flightradar24](https://www.flightradar24.com/blog/inside-flightradar24/understanding-altitude-on-flightradar24/)),
-and many light-aircraft transponders report it in 100 ft steps. On the ground
-Flightradar24 reports 0. `--check` moves it to the camera's GPS altitude at the
-seams; a cut track keeps it as it is.
+and many light-aircraft transponders report it in 100 ft steps. `--check`
+moves it to the camera's GPS altitude at the seams; a cut track keeps it as it
+is. Near the ground Flightradar24's 0 means "low", not "on the ground". In both
+example flights the altitude went straight between 200 and 0 ft and never
+showed 100. On one landing the camera's GPS was still about 200 ft above the
+runway when Flightradar24 went to 0, 20 s before touchdown. A filled stretch of
+0 ft points therefore gets one constant altitude, 0 plus the seam's difference
+(e.g. 238 ft). That is roughly right just after take-off and before landing,
+and too high on the runway.
 
 **On the ground and at low level** Flightradar24's coverage often stops, so
-taxiing and the start of the take-off roll may be missing. What no track covers
-stays missing, and `--check` says so.
+taxiing and the take-off roll may be missing: on the ground a receiver must be
+within about 20 km, with nothing in the way. In both example flights the track
+began only at about 75 kt, around lift-off; in one of them the roll had begun
+33 s earlier. What no track covers stays missing, and `--check` says so.
 
 ## Troubleshooting
 
@@ -313,6 +341,8 @@ stays missing, and `--check` says so.
 | `[WARNING] … timed by GS010130.mp4, not the camera's .360` | only an `.mp4` was found | give `--video-dir` with the `.360` files |
 | `[WARNING] … the camera clock is … off GPS time` | the camera's clock was wrong (or on local time) | nothing for the GPX; set OVRLEY's sync offset to 0 |
 | `ffprobe not found` | ffmpeg is not installed | `sudo apt install ffmpeg` |
+| `[WARNING] gpsbabel not found …` | gpsbabel is not installed; only the GPX copy of the Flightradar24 export is missing | `sudo apt install gpsbabel` |
+| `[WARNING] … was not made by gpsbabel, so … is not saved as GPX over it.` | a GPX of your own has the export's name | rename one of them |
 | cutting: `[ERROR] The window lies entirely outside the track.` with a `--tz` suggestion | the camera's clock runs in another time zone than you gave | use the suggested `--tz` |
 | cutting: `Could not read …: line N: …` | a damaged or different CSV | check that line; the header must have a time column and a position column |
 | OVRLEY: *Video could not be synced with activity* | the MP4's creation time is missing or different | set the sync offset to 0 |
